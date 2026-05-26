@@ -7,9 +7,10 @@ pkgdesc="Sandbox wrapper for AI coding agents"
 arch=('x86_64' 'aarch64')
 url="https://github.com/akitaonrails/ai-jail"
 license=('GPL-3.0-only')
-depends=('bubblewrap' 'gcc-libs')
+depends=('bubblewrap' 'glibc' 'gcc-libs')
 makedepends=('cargo')
 optdepends=(
+    'mise: language version management inside the sandbox'
     'docker: Docker socket passthrough for sandboxed agents'
 )
 # Cargo's release profile strips symbols, so the auto-generated -debug split

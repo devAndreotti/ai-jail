@@ -12,14 +12,14 @@ brew tap akitaonrails/tap && brew install ai-jail
 
 ### Arch Linux (AUR)
 
-Two packages are available. Pick one:
+Two project-maintained AUR packages are available. Pick one:
 
 ```bash
 yay -S ai-jail-bin    # prebuilt Linux x86_64 binary from GitHub Releases
 yay -S ai-jail        # builds from source with your local Rust toolchain
 ```
 
-The `-bin` variant is fastest and installs the same Linux x86_64 binary built by CI. The source variant compiles locally and is the right choice for Arch Linux ARM/aarch64. Both packages depend on `bubblewrap` and install the `ai-jail` binary to `/usr/bin/`.
+The `-bin` variant is fastest and installs the same Linux x86_64 binary built by CI. The source variant compiles locally and is the right choice for Arch Linux ARM/aarch64. Both packages depend on `bubblewrap` and install the `ai-jail` binary to `/usr/bin/`. AUR packaging is tracked in `packaging/aur/`; project co-maintainer access was coordinated in [#29](https://github.com/akitaonrails/ai-jail/issues/29).
 
 ### cargo install
 

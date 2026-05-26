@@ -8,8 +8,9 @@ pkgdesc="Sandbox wrapper for AI coding agents (prebuilt binary)"
 arch=('x86_64')
 url="https://github.com/akitaonrails/ai-jail"
 license=('GPL-3.0-only')
-depends=('bubblewrap' 'gcc-libs')
+depends=('bubblewrap' 'glibc' 'gcc-libs')
 optdepends=(
+    'mise: language version management inside the sandbox'
     'docker: Docker socket passthrough for sandboxed agents'
 )
 provides=("$_pkgname=$pkgver")
