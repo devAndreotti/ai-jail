@@ -127,7 +127,11 @@ cargo install ai-jail --force
 mise cache clear
 mise upgrade github:akitaonrails/ai-jail
 # or pin a specific release:
-mise use -g github:akitaonrails/ai-jail@1.2.1
+mise use -g github:akitaonrails/ai-jail@1.4.0
+
+# Old releases used mise's ubi backend; remove that separate install if present:
+mise unuse -g ubi:akitaonrails/ai-jail
+mise uninstall ubi:akitaonrails/ai-jail --all
 
 ```
 
