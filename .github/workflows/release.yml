@@ -117,6 +117,10 @@ jobs:
           echo "# macOS (Homebrew)" >> body.md
           echo "brew tap akitaonrails/tap && brew install ai-jail" >> body.md
           echo "" >> body.md
+          echo "# Arch Linux (AUR)" >> body.md
+          echo "yay -S ai-jail-bin      # prebuilt Linux x86_64 binary" >> body.md
+          echo "yay -S ai-jail          # builds from source" >> body.md
+          echo "" >> body.md
           echo "# From crates.io" >> body.md
           echo "cargo install ai-jail" >> body.md
           echo "" >> body.md

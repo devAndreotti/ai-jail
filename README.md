@@ -10,6 +10,17 @@ A sandbox wrapper for AI coding agents (Linux: `bwrap`, macOS: `sandbox-exec`). 
 brew tap akitaonrails/tap && brew install ai-jail
 ```
 
+### Arch Linux (AUR)
+
+Two packages are available. Pick one:
+
+```bash
+yay -S ai-jail-bin    # prebuilt Linux x86_64 binary from GitHub Releases
+yay -S ai-jail        # builds from source with your local Rust toolchain
+```
+
+The `-bin` variant is fastest and installs the same Linux x86_64 binary built by CI. The source variant compiles locally and is the right choice for Arch Linux ARM/aarch64. Both packages depend on `bubblewrap` and install the `ai-jail` binary to `/usr/bin/`.
+
 ### cargo install
 
 ```bash
@@ -23,15 +34,15 @@ cargo install ai-jail
 mise use -g github:akitaonrails/ai-jail
 
 # Pin an exact release globally
-mise use -g github:akitaonrails/ai-jail@1.2.1
+mise use -g github:akitaonrails/ai-jail@1.4.0
 ```
 
-Use the version as mise reports it (`1.2.1`), not the Git tag shorthand (`v1.2`). If a just-published release does not appear yet, clear mise's GitHub release cache first:
+Use the version as mise reports it (`1.4.0`), not the Git tag shorthand (`v1.4`). If a just-published release does not appear yet, clear mise's GitHub release cache first:
 
 ```bash
 mise cache clear
 mise ls-remote github:akitaonrails/ai-jail
-mise use -g github:akitaonrails/ai-jail@1.2.1
+mise use -g github:akitaonrails/ai-jail@1.4.0
 ```
 
 ### Nix (flake)
