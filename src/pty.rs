@@ -206,9 +206,10 @@ struct IoLoop<'a> {
     /// Optional control sequence to inject after the child has had a
     /// chance to process SIGWINCH. None when disabled.
     resize_redraw_key: Option<&'a [u8]>,
-    /// Extracts OSC 52 clipboard writes from the child stream so they
-    /// survive the alt-screen vt100 re-render (which drops them).
-    osc52: Osc52Forwarder,
+    /// Extracts OSC sequences (window title, clipboard, color queries)
+    /// from the child stream so they survive the alt-screen vt100
+    /// re-render (which drops them).
+    osc: OscForwarder,
 }
 
 impl<'a> IoLoop<'a> {
@@ -235,7 +236,7 @@ impl<'a> IoLoop<'a> {
             init_rows,
             init_cols,
             resize_redraw_key,
-            osc52: Osc52Forwarder::new(),
+            osc: OscForwarder::new(),
         }
     }
 
@@ -323,20 +324,23 @@ impl<'a> IoLoop<'a> {
         let screen = self.parser.screen();
         let now_alt = screen.alternate_screen();
 
-        // Forward kitty keyboard protocol sequences that vt100
-        // silently drops. Only needed on alt screen paths — the
+        // Forward CSI control/query sequences that vt100 silently
+        // drops (kitty keyboard protocol, Device Attributes, XTVERSION
+        // capability queries). Only needed on alt screen paths — the
         // primary screen uses raw pass-through anyway.
         if now_alt || now_alt != self.was_alt_screen {
-            forward_keyboard_protocol(self.stdout, buf);
+            forward_terminal_queries(self.stdout, buf);
         }
 
-        // Forward OSC 52 clipboard writes the same way. vt100 parses
-        // the OSC string but never re-emits it via state_diff /
-        // state_formatted, so a fullscreen TUI's "copy to clipboard"
-        // (opencode, claude --tui, etc.) is lost on the alt screen.
-        // The primary screen's raw pass-through carries it natively.
+        // Forward OSC sequences the same way. vt100 parses the OSC
+        // string but never re-emits it via state_diff / state_formatted,
+        // so on the alt screen a fullscreen TUI loses its window-title
+        // updates (OSC 0/1/2 — the tab keeps showing the launch command
+        // instead of "opencode", #57), clipboard writes (OSC 52), and
+        // color queries (OSC 10/11/12). The primary screen's raw
+        // pass-through carries these natively.
         if now_alt {
-            self.osc52.feed(self.stdout, buf);
+            self.osc.feed(self.stdout, buf);
         }
 
         if now_alt != self.was_alt_screen {
@@ -521,29 +525,49 @@ fn io_loop(
     crate::output::terminal_reset();
 }
 
-/// Scan child output for kitty keyboard protocol sequences and
-/// forward them to the real terminal.  The vt100 crate does not
-/// understand these, so `state_diff()` / `state_formatted()` will
-/// silently drop them.  Without forwarding, the real terminal
-/// never enables the protocol and modifier keys (Shift+Enter,
-/// Ctrl+i vs Tab, etc.) are lost.
+/// Decide whether a CSI sequence with the given final byte and
+/// optional private-prefix byte (`>`, `<`, `?`) is a terminal query
+/// or keyboard-protocol control that vt100 swallows and which must be
+/// forwarded verbatim to the real terminal.
 ///
-/// Recognised sequences (CSI with `>`, `<`, or `?` prefix,
-/// final byte `u`):
-///   - `\x1b[>flags u`  — push keyboard mode
-///   - `\x1b[<u`        — pop keyboard mode
-///   - `\x1b[?u`        — query keyboard mode
-fn forward_keyboard_protocol(fd: i32, data: &[u8]) {
+/// Forwarded:
+///   - final `u` with a `>`/`<`/`?` prefix — kitty keyboard protocol
+///     (push/pop/query). Without it modifier keys are lost.
+///   - final `c` (any prefix) — Primary/Secondary Device Attributes
+///     query (`CSI c`, `CSI 0 c`, `CSI > c`). TUIs that depend on the
+///     DA reply to detect terminal capabilities otherwise hang waiting
+///     and fall back to an ASCII/degraded mode — which drops accented
+///     characters (é, ã, …) and box-drawing glyphs (opencode, #57).
+///   - final `q` with a `>` prefix — XTVERSION (`CSI > q`) terminal
+///     name/version query, used for the same capability detection.
+fn csi_final_forwardable(final_b: u8, prefix: Option<u8>) -> bool {
+    match final_b {
+        b'u' => matches!(prefix, Some(b'>' | b'<' | b'?')),
+        b'c' => true,
+        b'q' => prefix == Some(b'>'),
+        _ => false,
+    }
+}
+
+/// Scan child output for CSI control/query sequences that vt100 does
+/// not re-emit through `state_diff()` / `state_formatted()` and forward
+/// them verbatim to the real terminal. Covers the kitty keyboard
+/// protocol and terminal capability queries (Device Attributes,
+/// XTVERSION). See [`csi_final_forwardable`] for the exact set.
+///
+/// Only needed on the alt screen — the primary screen uses raw
+/// pass-through, which carries these natively.
+fn forward_terminal_queries(fd: i32, data: &[u8]) {
     // Tiny state machine:  0=ground  1=ESC  2=CSI-start  3=params
     let mut st: u8 = 0;
     let mut start: usize = 0;
-    let mut is_kbd = false;
+    let mut prefix: Option<u8> = None;
     for (i, &b) in data.iter().enumerate() {
         match st {
             0 => {
                 if b == 0x1b {
                     start = i;
-                    is_kbd = false;
+                    prefix = None;
                     st = 1;
                 }
             }
@@ -555,12 +579,15 @@ fn forward_keyboard_protocol(fd: i32, data: &[u8]) {
                 }
             }
             2 => {
-                // First byte after CSI — check for > < ?
+                // First byte after CSI — check for a private prefix.
                 if b == b'>' || b == b'<' || b == b'?' {
-                    is_kbd = true;
+                    prefix = Some(b);
                     st = 3;
                 } else if (0x40..=0x7e).contains(&b) {
-                    st = 0; // final byte, not ours
+                    if csi_final_forwardable(b, prefix) {
+                        write_all_raw(fd, &data[start..=i]);
+                    }
+                    st = 0;
                 } else {
                     st = 3; // params
                 }
@@ -568,7 +595,7 @@ fn forward_keyboard_protocol(fd: i32, data: &[u8]) {
             3 => {
                 if (0x40..=0x7e).contains(&b) {
                     // Final byte
-                    if is_kbd && b == b'u' {
+                    if csi_final_forwardable(b, prefix) {
                         write_all_raw(fd, &data[start..=i]);
                     }
                     st = 0;
@@ -580,59 +607,88 @@ fn forward_keyboard_protocol(fd: i32, data: &[u8]) {
     }
 }
 
-/// Introducer for a 7-bit OSC 52 (manipulate selection) sequence.
-const OSC52_PREFIX: &[u8] = b"\x1b]52;";
+/// Hard cap on a single captured OSC sequence. Clipboard payloads
+/// (OSC 52) are base64 (~4/3 the raw size) and routinely span several
+/// read buffers; this guards against unbounded growth on malformed
+/// input.
+const OSC_MAX_LEN: usize = 1 << 20;
 
-/// Hard cap on a single captured OSC 52 sequence. Clipboard payloads
-/// are base64 (~4/3 the raw size) and routinely span several read
-/// buffers; this guards against unbounded growth on malformed input.
-const OSC52_MAX_LEN: usize = 1 << 20;
+/// OSC command numbers that vt100 swallows and which we forward
+/// verbatim to the real terminal:
+///   - 0/1/2 — set icon name / window title. Without forwarding, a
+///     fullscreen TUI's tab title never updates (opencode, #57).
+///   - 52    — clipboard manipulation (copy / query).
+///   - 10/11/12 — fg / bg / cursor color set & query. TUIs query these
+///     to adapt their palette; the reply round-trips via our stdin.
+const OSC_FORWARD_CMDS: &[&[u8]] =
+    &[b"0", b"1", b"2", b"10", b"11", b"12", b"52"];
 
-/// Where the OSC 52 scanner is within a (possibly read-spanning)
-/// sequence.
-enum Osc52State {
+/// Where the OSC scanner is within a (possibly read-spanning) sequence.
+enum OscState {
     /// Not inside a candidate sequence.
     Ground,
-    /// Matched this many leading bytes of `OSC52_PREFIX` (1..len).
-    Prefix(usize),
-    /// Inside the payload, accumulating until the terminator.
+    /// Saw `ESC`, waiting for the `]` that starts an OSC.
+    Esc,
+    /// Inside the OSC body, accumulating until the terminator.
     Body,
-    /// Saw `ESC` in the payload — maybe the start of an ST (`ESC \`).
+    /// Saw `ESC` in the body — maybe the start of an ST (`ESC \`).
     BodyEsc,
 }
 
-/// Streaming extractor for OSC 52 clipboard sequences.
+/// Streaming extractor for OSC sequences that vt100 drops.
 ///
-/// vt100 consumes the OSC string but does not expose or re-emit OSC
-/// 52, so on the alt-screen rendering paths (`state_diff` /
-/// `state_formatted`) a TUI's clipboard write is silently dropped.
-/// This scans the child's output byte-by-byte and forwards each
-/// complete `ESC ] 52 ; … (BEL | ST)` verbatim to the real terminal.
+/// vt100 consumes the OSC string but does not expose or re-emit it, so
+/// on the alt-screen rendering paths (`state_diff` / `state_formatted`)
+/// a TUI's window-title update, clipboard write, or color query is
+/// silently lost. This scans the child's output byte-by-byte and
+/// forwards each complete `ESC ] <cmd> ; … (BEL | ST)` verbatim to the
+/// real terminal when `<cmd>` is in [`OSC_FORWARD_CMDS`].
 ///
-/// State persists across reads on purpose: a base64 selection can
-/// easily exceed a single 8 KiB read, so a stateless per-read scan
-/// (like `forward_keyboard_protocol`) would miss split sequences.
-struct Osc52Forwarder {
-    state: Osc52State,
+/// State persists across reads on purpose: a base64 OSC 52 selection
+/// can easily exceed a single 8 KiB read, so a stateless per-read scan
+/// (like [`forward_terminal_queries`]) would miss split sequences.
+struct OscForwarder {
+    state: OscState,
     buf: Vec<u8>,
 }
 
-impl Osc52Forwarder {
+impl OscForwarder {
     fn new() -> Self {
         Self {
-            state: Osc52State::Ground,
+            state: OscState::Ground,
             buf: Vec::new(),
         }
     }
 
     fn reset(&mut self) {
-        self.state = Osc52State::Ground;
+        self.state = OscState::Ground;
         self.buf.clear();
     }
 
+    /// Forward the captured sequence only if its OSC command number is
+    /// in the allowlist; always reset afterwards.
     fn flush(&mut self, fd: i32) {
-        write_all_raw(fd, &self.buf);
+        if Self::is_forwardable(&self.buf) {
+            write_all_raw(fd, &self.buf);
+        }
         self.reset();
+    }
+
+    /// Inspect a captured `ESC ] <cmd> (;|terminator) …` buffer and
+    /// decide whether `<cmd>` is one we forward.
+    fn is_forwardable(buf: &[u8]) -> bool {
+        // Strip the leading "\x1b]" introducer.
+        let body = match buf.strip_prefix(b"\x1b]") {
+            Some(b) => b,
+            None => return false,
+        };
+        // The command number runs up to the first ';' (or the
+        // terminator, for parameter-less commands).
+        let end = body
+            .iter()
+            .position(|&b| b == b';' || b == 0x07 || b == 0x1b)
+            .unwrap_or(body.len());
+        OSC_FORWARD_CMDS.contains(&&body[..end])
     }
 
     fn feed(&mut self, fd: i32, data: &[u8]) {
@@ -643,30 +699,25 @@ impl Osc52Forwarder {
 
     fn push(&mut self, fd: i32, b: u8) {
         match self.state {
-            Osc52State::Ground => {
+            OscState::Ground => {
                 if b == 0x1b {
                     self.buf.push(b);
-                    self.state = Osc52State::Prefix(1);
+                    self.state = OscState::Esc;
                 }
             }
-            Osc52State::Prefix(n) => {
-                if b == OSC52_PREFIX[n] {
+            OscState::Esc => {
+                if b == b']' {
                     self.buf.push(b);
-                    self.state = if n + 1 == OSC52_PREFIX.len() {
-                        Osc52State::Body
-                    } else {
-                        Osc52State::Prefix(n + 1)
-                    };
+                    self.state = OscState::Body;
                 } else if b == 0x1b {
-                    // Mismatch, but a fresh ESC may start a new one.
+                    // Another ESC — keep waiting for the ']'.
                     self.buf.clear();
                     self.buf.push(b);
-                    self.state = Osc52State::Prefix(1);
                 } else {
                     self.reset();
                 }
             }
-            Osc52State::Body => match b {
+            OscState::Body => match b {
                 0x07 => {
                     // BEL terminator.
                     self.buf.push(b);
@@ -674,16 +725,16 @@ impl Osc52Forwarder {
                 }
                 0x1b => {
                     self.buf.push(b);
-                    self.state = Osc52State::BodyEsc;
+                    self.state = OscState::BodyEsc;
                 }
                 _ => {
                     self.buf.push(b);
-                    if self.buf.len() > OSC52_MAX_LEN {
+                    if self.buf.len() > OSC_MAX_LEN {
                         self.reset();
                     }
                 }
             },
-            Osc52State::BodyEsc => {
+            OscState::BodyEsc => {
                 if b == b'\\' {
                     // ST terminator (ESC \).
                     self.buf.push(b);
@@ -973,12 +1024,12 @@ mod tests {
     }
 
     use super::ends_at_ground_state;
-    use super::forward_keyboard_protocol;
+    use super::forward_terminal_queries;
     use std::os::unix::io::AsRawFd;
 
     fn capture_kbd_forward(data: &[u8]) -> Vec<u8> {
         let (r, w) = nix::unistd::pipe().unwrap();
-        forward_keyboard_protocol(w.as_raw_fd(), data);
+        forward_terminal_queries(w.as_raw_fd(), data);
         drop(w);
         let mut out = vec![0u8; 256];
         let n = nix::unistd::read(r.as_raw_fd(), &mut out).unwrap_or(0);
@@ -1028,9 +1079,59 @@ mod tests {
         assert!(out.is_empty());
     }
 
+    #[test]
+    fn primary_device_attributes_forwarded() {
+        // CSI c  — Primary DA query. opencode and other TUIs rely on
+        // the reply for capability detection; without forwarding they
+        // degrade to ASCII and drop accented chars (#57).
+        assert_eq!(capture_kbd_forward(b"\x1b[c"), b"\x1b[c");
+        // CSI 0 c — same query with an explicit parameter.
+        assert_eq!(capture_kbd_forward(b"\x1b[0c"), b"\x1b[0c");
+    }
+
+    #[test]
+    fn secondary_device_attributes_forwarded() {
+        // CSI > c  — Secondary DA query.
+        assert_eq!(capture_kbd_forward(b"\x1b[>c"), b"\x1b[>c");
+    }
+
+    #[test]
+    fn xtversion_query_forwarded() {
+        // CSI > q  — XTVERSION terminal name/version query.
+        assert_eq!(capture_kbd_forward(b"\x1b[>q"), b"\x1b[>q");
+    }
+
+    #[test]
+    fn unrelated_csi_finals_not_forwarded() {
+        // SGR (m), cursor home (H), erase (J), DSR (n) stay swallowed —
+        // vt100 reconstructs the screen for those, and forwarding a DSR
+        // cursor-position request would race the real terminal's cursor.
+        assert!(capture_kbd_forward(b"\x1b[31m").is_empty());
+        assert!(capture_kbd_forward(b"\x1b[6n").is_empty());
+        assert!(capture_kbd_forward(b"\x1b[2J").is_empty());
+    }
+
+    #[test]
+    fn plain_csi_u_not_forwarded() {
+        // `\x1b[u` (no >/</? prefix) is SCORC — restore cursor position,
+        // NOT a kitty keyboard control. vt100 handles it on the screen
+        // model, so forwarding it would move the real cursor wrongly.
+        // This guards the prefix requirement in csi_final_forwardable.
+        assert!(capture_kbd_forward(b"\x1b[u").is_empty());
+        assert!(capture_kbd_forward(b"\x1b[1;5u").is_empty());
+    }
+
+    #[test]
+    fn osc_title_split_across_reads_forwarded_whole() {
+        // A window-title update can straddle a read boundary just like
+        // OSC 52; the forwarder must reassemble and forward it whole.
+        let seq = b"\x1b]2;opencode session\x07";
+        assert_eq!(capture_osc52(&[&seq[..6], &seq[6..]]), seq);
+    }
+
     fn capture_osc52(chunks: &[&[u8]]) -> Vec<u8> {
         let (r, w) = nix::unistd::pipe().unwrap();
-        let mut fwd = super::Osc52Forwarder::new();
+        let mut fwd = super::OscForwarder::new();
         for chunk in chunks {
             fwd.feed(w.as_raw_fd(), chunk);
         }
@@ -1075,9 +1176,29 @@ mod tests {
     }
 
     #[test]
-    fn osc52_other_osc_not_forwarded() {
-        // OSC 0 (window title) must not be mistaken for OSC 52.
-        let out = capture_osc52(&[b"\x1b]0;my title\x07"]);
+    fn osc_window_title_forwarded() {
+        // OSC 0 (icon + title) and OSC 2 (title) must reach the real
+        // terminal so the tab shows the TUI name, not the launch
+        // command (#57). vt100 swallows them on the alt screen.
+        let t0 = b"\x1b]0;opencode\x07";
+        assert_eq!(capture_osc52(&[t0]), t0);
+        let t2 = b"\x1b]2;opencode\x1b\\";
+        assert_eq!(capture_osc52(&[t2]), t2);
+    }
+
+    #[test]
+    fn osc_color_query_forwarded() {
+        // OSC 11 (background color) query — TUIs adapt their palette
+        // from the reply, which round-trips via our stdin.
+        let q = b"\x1b]11;?\x07";
+        assert_eq!(capture_osc52(&[q]), q);
+    }
+
+    #[test]
+    fn osc_unlisted_command_not_forwarded() {
+        // OSC 4 (palette set) is not in the allowlist; vt100 handles
+        // palette state itself, so we must not double-forward it.
+        let out = capture_osc52(&[b"\x1b]4;1;rgb:ff/00/00\x07"]);
         assert!(out.is_empty());
     }
 
@@ -1089,7 +1210,7 @@ mod tests {
     #[test]
     fn osc52_oversized_payload_dropped() {
         let mut seq = b"\x1b]52;c;".to_vec();
-        seq.extend(std::iter::repeat_n(b'A', super::OSC52_MAX_LEN + 16));
+        seq.extend(std::iter::repeat_n(b'A', super::OSC_MAX_LEN + 16));
         seq.push(0x07);
         assert!(capture_osc52(&[&seq]).is_empty());
     }

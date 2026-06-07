@@ -23,7 +23,21 @@ fn command_basename(command: &[String]) -> Option<&str> {
 }
 
 fn command_needs_direct_tty(command: &[String]) -> bool {
-    command_basename(command) == Some("crush")
+    // Tools that must own the real terminal directly, bypassing the
+    // vt100 status-bar proxy:
+    //   - crush: requires direct terminal passthrough.
+    //   - opencode: its TUI is built almost entirely from East Asian
+    //     Ambiguous-width glyphs (the half-block logo ▀▄, separator
+    //     dots ·, box drawing). vt100 reconstructs the alt screen with
+    //     a fixed narrow-width model and relative cursor moves, so on
+    //     terminals that render those glyphs double-width the rebuilt
+    //     frame drifts and the glyphs come out as tofu/black boxes
+    //     (#57). The codepoints and colors survive the proxy intact —
+    //     only the width assumption diverges — and vt100 owns the width
+    //     model, so there is no faithful reconstruction. Routing
+    //     opencode straight through the terminal (no status bar)
+    //     preserves its own absolute glyph positioning.
+    matches!(command_basename(command), Some("crush") | Some("opencode"))
 }
 
 fn command_is_browser(command: &[String]) -> bool {
@@ -270,9 +284,10 @@ fn run() -> Result<i32, String> {
     if cli.verbose {
         if config.status_bar_enabled() {
             if needs_direct_tty {
-                output::verbose(
-                    "Status bar: skipped (crush requires direct terminal passthrough)",
-                );
+                output::verbose(&format!(
+                    "Status bar: skipped ({} requires direct terminal passthrough)",
+                    command_basename(&config.command).unwrap_or("command")
+                ));
             } else if multiplexer_skip {
                 output::verbose(&format!(
                     "Status bar: auto-disabled ({} detected; pass -s to force-enable)",
@@ -410,6 +425,16 @@ mod tests {
     fn crush_requires_direct_tty() {
         assert!(command_needs_direct_tty(&["crush".into()]));
         assert!(command_needs_direct_tty(&["/usr/bin/crush".into()]));
+    }
+
+    #[test]
+    fn opencode_requires_direct_tty() {
+        // opencode's ambiguous-width TUI cannot be faithfully rebuilt
+        // by the vt100 proxy; it must own the terminal directly (#57).
+        assert!(command_needs_direct_tty(&["opencode".into()]));
+        assert!(command_needs_direct_tty(&[
+            "/home/x/.opencode/bin/opencode".into()
+        ]));
     }
 
     #[test]
