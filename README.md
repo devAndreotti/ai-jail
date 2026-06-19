@@ -1,5 +1,34 @@
 # ai-jail
 
+## Scriply Windows/WSL/Docker adaptation
+
+This repository is an unofficial operational fork/adaptation of Fabio Akita's
+[`akitaonrails/ai-jail`](https://github.com/akitaonrails/ai-jail).
+
+The upstream project remains the base sandbox implementation. The additions in
+this repository focus on running AI coding agents from Windows projects through
+PowerShell, WSL2, isolated agent profiles, and a Docker fallback image.
+
+Main additions:
+
+- `ia/12-AI-Jail.ps1`: PowerShell launcher for WSL2 `ai-jail` and Docker fallback.
+- `ia/12-AI-Jail-Setup.ps1`: WSL bootstrap/update helper.
+- `docker-fallback/`: Docker image and wrapper for machines where WSL/bwrap is not available.
+- isolated agent profiles under `~/.scriply/ai-jail/profiles/<profile>`.
+- `--agent-profile` for separate persistent agent identities.
+- `--host-agent-login` as explicit opt-in before copying host agent login.
+- default `--private-home` and `--no-ssh` when host login is disabled.
+- read-only sync for skills/plugins/MCP context without copying login credentials.
+- public-safe SSH opt-in via `AI_JAIL_SSH_KEY_MAP`; no personal key paths are hardcoded.
+
+Security notes:
+
+- No API token, `auth.json`, private SSH key, `.aws`, `.gnupg`, or browser profile should be committed.
+- Docker fallback no longer accepts `GH_TOKEN` as a build argument.
+- Keep this repo private until each release candidate passes the secret scan and sandbox tests.
+
+The original upstream README continues below.
+
 A sandbox wrapper for AI coding agents (Linux: `bwrap`, macOS: `sandbox-exec`). Run Claude Code, GPT Codex, OpenCode, Crush, and similar tools with access only to the paths you allow.
 
 ## Install
