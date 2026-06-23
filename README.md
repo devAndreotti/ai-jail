@@ -1,33 +1,89 @@
 # ai-jail
 
-## Scriply Windows/WSL/Docker adaptation
+## Scriply Windows/WSL/Docker fork
 
-This repository is an unofficial operational fork/adaptation of Fabio Akita's
-[`akitaonrails/ai-jail`](https://github.com/akitaonrails/ai-jail).
+This repository is a public fork of Fabio Akita's
+[`akitaonrails/ai-jail`](https://github.com/akitaonrails/ai-jail). Upstream
+remains the base sandbox implementation. This fork layers a Windows-oriented
+operator workflow on top so AI agents can be launched from PowerShell into WSL2
+`ai-jail`, or into a Docker compatibility fallback when WSL/bwrap is not
+available.
 
-The upstream project remains the base sandbox implementation. The additions in
-this repository focus on running AI coding agents from Windows projects through
-PowerShell, WSL2, isolated agent profiles, and a Docker fallback image.
+The original upstream README starts after this fork note. Upstream sections
+describe the core `ai-jail` binary; the Scriply files below are the Windows
+integration layer.
 
-Main additions:
+### Added by this fork
 
-- `ia/12-AI-Jail.ps1`: PowerShell launcher for WSL2 `ai-jail` and Docker fallback.
-- `ia/12-AI-Jail-Setup.ps1`: WSL bootstrap/update helper.
-- `docker-fallback/`: Docker image and wrapper for machines where WSL/bwrap is not available.
-- isolated agent profiles under `~/.scriply/ai-jail/profiles/<profile>`.
-- `--agent-profile` for separate persistent agent identities.
-- `--host-agent-login` as explicit opt-in before copying host agent login.
-- default `--private-home` and `--no-ssh` when host login is disabled.
-- read-only sync for skills/plugins/MCP context without copying login credentials.
-- public-safe SSH opt-in via `AI_JAIL_SSH_KEY_MAP`; no personal key paths are hardcoded.
+- `ia/12-AI-Jail.ps1`: PowerShell launcher for WSL2 `ai-jail` and Docker
+  fallback.
+- `ia/12-AI-Jail-Setup.ps1`: WSL bootstrap/update helper for the local operator
+  workflow.
+- `ia/12-AI-Jail.bat`: Windows alias metadata wrapper used by Scriply.
+- `docker-fallback/`: Docker image and wrapper for compatibility mode.
+- `tests/scriply/`: regression checks for the Windows launcher and fallback
+  hardening.
 
-Security notes:
+### Agent identity model
 
-- No API token, `auth.json`, private SSH key, `.aws`, `.gnupg`, or browser profile should be committed.
-- Docker fallback no longer accepts `GH_TOKEN` as a build argument.
-- Keep this repo private until each release candidate passes the secret scan and sandbox tests.
+Default mode keeps agent login state separate from the host:
 
-The original upstream README continues below.
+- `--agent-profile <name>` stores persistent isolated state under
+  `~/.scriply/ai-jail/profiles/<name>` inside WSL, or in a profile-specific
+  Docker volume for the fallback.
+- `--host-agent-login` is explicit opt-in before host agent login state such as
+  Codex `auth.json` is copied or mounted.
+- When host login is not enabled, the launcher adds `--private-home` and
+  `--no-ssh` by default.
+- `--no-private-home` is rejected unless `--host-agent-login` is also present,
+  because it can expose existing agent state from the host home.
+
+### Skills, plugins, and MCP config
+
+The fork tries to preserve useful agent context without silently copying login
+credentials:
+
+- Codex skills and plugin caches can be mounted read-only in Docker mode or
+  synced into a Scriply context directory for WSL mode.
+- `.agents/skills` and local tool-agent skill folders can also be exposed as
+  read-only context when they exist.
+- Codex config is copied through a Docker-safe filter. Host auth is omitted
+  unless `--host-agent-login` is passed.
+- This is not full MCP parity. Docker-incompatible MCP servers are filtered from
+  the generated Codex config, and external MCP servers still need their own
+  runtime, network, and credential model.
+
+### Docker fallback limits
+
+Docker fallback is for compatibility, not a perfect replacement for upstream
+`ai-jail`:
+
+- Prefer WSL2 + upstream `ai-jail` for stronger bwrap/Landlock isolation.
+- Docker fallback has partial flag parity and logs ignored `ai-jail` flags.
+- `--lockdown` makes the container read-only and disables networking, but Docker
+  is still not a malware-grade security boundary.
+- The fallback image no longer accepts `GH_TOKEN` as a build argument.
+
+### SSH and secrets
+
+- SSH is not shared by default. Use `--ssh` plus `AI_JAIL_SSH_KEY_MAP` to expose
+  specific keys read-only.
+- No personal SSH key paths are hardcoded in this fork.
+- Do not commit API tokens, `auth.json`, private SSH keys, `.aws`, `.gnupg`,
+  browser profiles, or local credential files.
+- This fork is public. Run the secret scan and Scriply regression tests before
+  pushing changes.
+
+### What this fork does not do
+
+- It does not make the Rust `ai-jail` binary run natively on Windows. Windows
+  usage goes through WSL2 or Docker.
+- It does not hide secrets already inside the project directory. Use upstream
+  `--mask` rules for files such as `.env`, `credentials.json`, or other local
+  secrets.
+- It does not guarantee every Codex/Claude/OpenCode/MCP setup works inside the
+  fallback. Agent binaries, MCP servers, and provider logins may still need
+  profile-specific setup.
 
 A sandbox wrapper for AI coding agents (Linux: `bwrap`, macOS: `sandbox-exec`). Run Claude Code, GPT Codex, OpenCode, Crush, and similar tools with access only to the paths you allow.
 
