@@ -1,6 +1,6 @@
 # ai-jail
 
-## Scriply Windows/WSL/Docker fork
+## Scope Windows/WSL/Docker fork
 
 This repository is a public fork of Fabio Akita's
 [`akitaonrails/ai-jail`](https://github.com/akitaonrails/ai-jail). Upstream
@@ -10,7 +10,7 @@ operator workflow on top so AI agents can be launched from PowerShell into WSL2
 available.
 
 The original upstream README starts after this fork note. Upstream sections
-describe the core `ai-jail` binary; the Scriply files below are the Windows
+describe the core `ai-jail` binary; the Scope files below are the Windows
 integration layer.
 
 ### Added by this fork
@@ -19,7 +19,7 @@ integration layer.
   fallback.
 - `ia/12-AI-Jail-Setup.ps1`: WSL bootstrap/update helper for the local operator
   workflow.
-- `ia/12-AI-Jail.bat`: Windows alias metadata wrapper used by Scriply.
+- `ia/12-AI-Jail.bat`: Windows alias metadata wrapper used by Scope.
 - `docker-fallback/`: Docker image and wrapper for compatibility mode.
 - `tests/scriply/`: regression checks for the Windows launcher and fallback
   hardening.
@@ -44,7 +44,7 @@ The fork tries to preserve useful agent context without silently copying login
 credentials:
 
 - Codex skills and plugin caches can be mounted read-only in Docker mode or
-  synced into a Scriply context directory for WSL mode.
+  synced into a Scope context directory for WSL mode.
 - `.agents/skills` and local tool-agent skill folders can also be exposed as
   read-only context when they exist.
 - Codex config is copied through a Docker-safe filter. Host auth is omitted
@@ -71,7 +71,7 @@ Docker fallback is for compatibility, not a perfect replacement for upstream
 - No personal SSH key paths are hardcoded in this fork.
 - Do not commit API tokens, `auth.json`, private SSH keys, `.aws`, `.gnupg`,
   browser profiles, or local credential files.
-- This fork is public. Run the secret scan and Scriply regression tests before
+- This fork is public. Run the secret scan and Scope regression tests before
   pushing changes.
 
 ### What this fork does not do
